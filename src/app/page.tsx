@@ -17,24 +17,45 @@ type Row = {
   wins: number;
   games: number;
   losses: number;
-  winRate: number;     // 0..1
-  lastPlayed?: string; // ISO
-  streak: string;      // "W2" | "L1" | "—"
+  winRate: number;
+  lastPlayed?: string;
+  streak: string;
   total_points: number;
   rank: number;
 };
 
 type Game = { id: string; name: string };
-
 type RangeKeyPlus = RangeKey | "custom";
 const ALL_GAMES = "__all__";
 
+// ---------- helpers de normalização
+type OneOrMany<T> = T | T[] | null | undefined;
+const asOne = <T,>(v: OneOrMany<T>): T | null => (Array.isArray(v) ? v[0] ?? null : v ?? null);
+
+// form bruto que pode vir do Supabase
+type ScoreFetchRaw = {
+  match_id: string;
+  player_id: string;
+  is_winner: boolean;
+  players: OneOrMany<{ name: string }>;
+  matches: OneOrMany<{ played_at: string; game_id: string }>;
+};
+
+// forma já normalizada
+type ScoreFetch = {
+  match_id: string;
+  player_id: string;
+  is_winner: boolean;
+  players: { name: string } | null;
+  matches: { played_at: string; game_id: string } | null;
+};
+
 export default function HomePage() {
   const [range, setRange] = useState<RangeKeyPlus>("total");
-  const [customFrom, setCustomFrom] = useState<string>(""); // YYYY-MM-DD
-  const [customTo,   setCustomTo]   = useState<string>(""); // YYYY-MM-DD
-  const [gameId, setGameId]         = useState<string>(""); // filtro por jogo ("" = todos)
-  const [search, setSearch]         = useState<string>(""); // busca por jogador
+  const [customFrom, setCustomFrom] = useState<string>("");
+  const [customTo, setCustomTo] = useState<string>("");
+  const [gameId, setGameId] = useState<string>("");
+  const [search, setSearch] = useState<string>("");
 
   const [games, setGames] = useState<Game[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
@@ -47,7 +68,7 @@ export default function HomePage() {
   function computeRangeDates(r: RangeKeyPlus) {
     if (r !== "custom") return rangeToDates(r);
     const from = customFrom ? new Date(`${customFrom}T00:00:00`) : undefined;
-    const to   = customTo   ? new Date(`${customTo}T23:59:59.999`) : undefined;
+    const to = customTo ? new Date(`${customTo}T23:59:59.999`) : undefined;
     return { from, to };
   }
 
@@ -72,12 +93,21 @@ export default function HomePage() {
       return;
     }
 
+    const raw = data as unknown as ScoreFetchRaw[];
+    const normalized: ScoreFetch[] = raw.map((r) => ({
+      match_id: r.match_id,
+      player_id: r.player_id,
+      is_winner: r.is_winner,
+      players: asOne(r.players),
+      matches: asOne(r.matches),
+    }));
+
     const { from, to } = computeRangeDates(r);
 
-    const filtered = (data as any[]).filter((d) => {
+    const filtered = normalized.filter((d) => {
       const playedAt = new Date(d.matches?.played_at ?? 0);
-      const okDate   = !from ? true : (playedAt >= from && (!to || playedAt <= to));
-      const okGame   = !gameId ? true : (d.matches?.game_id === gameId);
+      const okDate = !from ? true : playedAt >= from && (!to || playedAt <= to);
+      const okGame = !gameId ? true : d.matches?.game_id === gameId;
       return okDate && okGame;
     });
 
@@ -94,8 +124,8 @@ export default function HomePage() {
     };
     const acc = new Map<string, Acc>();
 
-    filtered.forEach((r: any) => {
-      const id = r.player_id as string;
+    filtered.forEach((r) => {
+      const id = r.player_id;
       const name = r.players?.name ?? "Jogador";
       const w = !!r.is_winner;
       const date = new Date(r.matches?.played_at ?? 0);
@@ -138,17 +168,18 @@ export default function HomePage() {
           total_points: wins,
         } as Row;
       })
-      .sort((A, B) => (B.wins - A.wins) || (B.winRate - A.winRate) || (A.games - B.games));
+      .sort((A, B) => B.wins - A.wins || B.winRate - A.winRate || A.games - B.games);
 
+    // dense rank
     const withRank: Row[] = [];
     let lastPts: number | null = null;
     let currentRank = 0;
-    ordered.forEach((r) => {
-      if (lastPts === null || r.wins !== lastPts) {
+    ordered.forEach((r2) => {
+      if (lastPts === null || r2.wins !== lastPts) {
         currentRank += 1;
-        lastPts = r.wins;
+        lastPts = r2.wins;
       }
-      withRank.push({ ...r, rank: currentRank });
+      withRank.push({ ...r2, rank: currentRank });
     });
 
     setRows(withRank);
@@ -163,7 +194,7 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    fetchLeaderboard(range);
+    void fetchLeaderboard(range);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, customFrom, customTo, gameId]);
 
@@ -217,15 +248,11 @@ export default function HomePage() {
               {/* Jogo */}
               <div>
                 <div className="text-xs mb-1 text-muted-foreground">Jogo</div>
-                <Select
-                  value={gameId}
-                  onValueChange={(v) => setGameId(v === ALL_GAMES ? "" : v)}
-                >
+                <Select value={gameId || ALL_GAMES} onValueChange={(v) => setGameId(v === ALL_GAMES ? "" : v)}>
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="Todos os jogos" />
                   </SelectTrigger>
                   <SelectContent>
-                    {/* NUNCA usar value="" aqui */}
                     <SelectItem value={ALL_GAMES}>Todos</SelectItem>
                     {games.map((g) => (
                       <SelectItem key={g.id} value={g.id}>
@@ -237,31 +264,19 @@ export default function HomePage() {
               </div>
 
               {/* Datas (só ativa no personalizado) */}
-              <div className={`${range === "custom" ? "" : "opacity-60 pointer-events-none"}`}>
+              <div className={range === "custom" ? "" : "opacity-60 pointer-events-none"}>
                 <div className="text-xs mb-1 text-muted-foreground">De</div>
-                <Input
-                  type="date"
-                  value={customFrom}
-                  onChange={(e) => setCustomFrom(e.target.value)}
-                />
+                <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
               </div>
-              <div className={`${range === "custom" ? "" : "opacity-60 pointer-events-none"}`}>
+              <div className={range === "custom" ? "" : "opacity-60 pointer-events-none"}>
                 <div className="text-xs mb-1 text-muted-foreground">Até</div>
-                <Input
-                  type="date"
-                  value={customTo}
-                  onChange={(e) => setCustomTo(e.target.value)}
-                />
+                <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
               </div>
 
               {/* Busca */}
               <div>
                 <div className="text-xs mb-1 text-muted-foreground">Buscar jogador</div>
-                <Input
-                  placeholder="Nome do jogador…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+                <Input placeholder="Nome do jogador…" value={search} onChange={(e) => setSearch(e.target.value)} />
               </div>
             </div>
 
@@ -279,9 +294,7 @@ export default function HomePage() {
           {top3.length > 0 ? (
             <Podium top3={top3} />
           ) : (
-            <Card className="p-4 text-center text-sm text-muted-foreground">
-              Sem vitórias neste período.
-            </Card>
+            <Card className="p-4 text-center text-sm text-muted-foreground">Sem vitórias neste período.</Card>
           )}
 
           {/* Tabela */}
@@ -316,24 +329,25 @@ export default function HomePage() {
                   </TableRow>
                 )}
 
-                {!loading && rowsFilteredBySearch.map((r) => (
-                  <TableRow key={r.player_id}>
-                    <TableCell className="w-10">{r.rank}</TableCell>
-                    <TableCell className="font-medium">
-                      {r.player_name}
-                      <div className="text-xs text-muted-foreground">
-                        {r.wins} vitória{r.wins === 1 ? "" : "s"} • {r.games} partida{r.games === 1 ? "" : "s"}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Badge variant="secondary">{r.wins}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">{r.games}</TableCell>
-                    <TableCell className="text-right">{(r.winRate * 100).toFixed(0)}%</TableCell>
-                    <TableCell className="text-right">{r.streak}</TableCell>
-                    <TableCell className="text-right">{r.lastPlayed ? fmtDate(r.lastPlayed) : "—"}</TableCell>
-                  </TableRow>
-                ))}
+                {!loading &&
+                  rowsFilteredBySearch.map((r) => (
+                    <TableRow key={r.player_id}>
+                      <TableCell className="w-10">{r.rank}</TableCell>
+                      <TableCell className="font-medium">
+                        {r.player_name}
+                        <div className="text-xs text-muted-foreground">
+                          {r.wins} vitória{r.wins === 1 ? "" : "s"} • {r.games} partida{r.games === 1 ? "" : "s"}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant="secondary">{r.wins}</Badge>
+                      </TableCell>
+                      <TableCell className="text-right">{r.games}</TableCell>
+                      <TableCell className="text-right">{(r.winRate * 100).toFixed(0)}%</TableCell>
+                      <TableCell className="text-right">{r.streak}</TableCell>
+                      <TableCell className="text-right">{r.lastPlayed ? fmtDate(r.lastPlayed) : "—"}</TableCell>
+                    </TableRow>
+                  ))}
               </TableBody>
             </Table>
           </Card>

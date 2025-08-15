@@ -2,55 +2,50 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Trophy, ClipboardList, Users2, Gamepad2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Menu } from "lucide-react";
 
-type Item = {
-  href: string;
-  label: string;
-  Icon: React.ComponentType<any>;
-};
+type NavItem = { href: string; label: string };
 
-const items: Item[] = [
-  { href: "/",         label: "Ranking",  Icon: Trophy },
-  { href: "/matches",  label: "Partida",  Icon: ClipboardList },
-  { href: "/players",  label: "Jogadores",Icon: Users2 },
-  { href: "/games",    label: "Jogos",    Icon: Gamepad2 },
+const items: NavItem[] = [
+  { href: "/", label: "Ranking" },
+  { href: "/matches", label: "Registrar" },
+  { href: "/players", label: "Jogadores" },
+  { href: "/games", label: "Jogos" },
 ];
 
 export default function MobileNav() {
   const pathname = usePathname();
 
   return (
-    <nav
-      className="
-        md:hidden fixed bottom-0 left-0 right-0 z-40
-        border-t bg-background/90 backdrop-blur
-        supports-[padding:env(safe-area-inset-bottom)]:pb-[env(safe-area-inset-bottom)]
-      "
-    >
-      <ul className="grid grid-cols-4">
-        {items.map(({ href, label, Icon }) => {
-          const active =
-            pathname === href ||
-            (href !== "/" && pathname?.startsWith(href));
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="icon" className="sm:hidden">
+          <Menu className="h-5 w-5" />
+          <span className="sr-only">Menu</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="bottom" className="w-44">
+        {items.map((it) => {
+          const active = pathname === it.href;
           return (
-            <li key={href}>
+            <DropdownMenuItem key={it.href} asChild>
               <Link
-                href={href}
-                className={`
-                  flex flex-col items-center justify-center gap-1 py-2
-                  text-xs
-                  ${active ? "text-foreground" : "text-muted-foreground"}
-                `}
-                aria-current={active ? "page" : undefined}
+                href={it.href}
+                className={`block w-full ${active ? "font-medium" : ""}`}
               >
-                <Icon className="h-5 w-5" />
-                <span className="truncate">{label}</span>
+                {it.label}
               </Link>
-            </li>
+            </DropdownMenuItem>
           );
         })}
-      </ul>
-    </nav>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

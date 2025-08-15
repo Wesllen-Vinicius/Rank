@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,11 +13,37 @@ import { toast } from "sonner";
 import { Crown } from "lucide-react";
 
 type Player = { id: string; name: string };
-type Game   = { id: string; name: string };
-type Line   = { player_id: string; is_winner: boolean };
+type Game = { id: string; name: string };
+type Line = { player_id: string; is_winner: boolean };
+
+// ---------- helpers de normalização
+type OneOrMany<T> = T | T[] | null | undefined;
+const asOne = <T,>(v: OneOrMany<T>): T | null => (Array.isArray(v) ? v[0] ?? null : v ?? null);
+
+type MatchScoreRef = {
+  player_id: string;
+  is_winner: boolean;
+  players: { name: string } | null;
+};
+
+type MatchRef = {
+  id: string;
+  played_at: string;
+  day_seq: number | null;
+  games: { name: string } | null;
+  match_scores: MatchScoreRef[] | null;
+};
+
+// forma bruta retornada pelo Supabase (pode ser array nas joins)
+type MatchRefRaw = {
+  id: string;
+  played_at: string;
+  day_seq: number | null;
+  games: OneOrMany<{ name: string }>;
+  match_scores: { is_winner: boolean; player_id: string; players: OneOrMany<{ name: string }> }[] | null;
+};
 
 const LS_LAST_GAME = "lastGameId";
-const PAGE_SIZE = 10;
 
 function toLocalDatetimeInputValue(d = new Date()) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -25,26 +51,21 @@ function toLocalDatetimeInputValue(d = new Date()) {
 }
 
 export default function MatchesPage() {
-  const [players, setPlayers]   = useState<Player[]>([]);
-  const [games, setGames]       = useState<Game[]>([]);
-  const [gameId, setGameId]     = useState<string>("");
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [games, setGames] = useState<Game[]>([]);
+  const [gameId, setGameId] = useState<string>("");
   const [playedAt, setPlayedAt] = useState<string>(toLocalDatetimeInputValue());
-  const [notes, setNotes]       = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
 
-  const [lines, setLines]   = useState<Line[]>([]);
-
-  // recentes com paginação
-  const [recent, setRecent]   = useState<any[]>([]);
-  const [rLoading, setRLoading] = useState(true);
-  const [total, setTotal]     = useState(0);
-  const [page, setPage]       = useState(0);
+  const [lines, setLines] = useState<Line[]>([]);
+  const [recent, setRecent] = useState<MatchRef[]>([]);
 
   const [adding, setAdding] = useState(false);
-  const [quick, setQuick]   = useState("");
+  const [quick, setQuick] = useState("");
   const [quickOpen, setQuickOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
 
-  const chosen       = useMemo(() => new Set(lines.map((l) => l.player_id)), [lines]);
+  const chosen = useMemo(() => new Set(lines.map((l) => l.player_id)), [lines]);
   const winnersCount = useMemo(() => lines.filter((l) => l.is_winner).length, [lines]);
 
   const quickSuggestions = useMemo(() => {
@@ -54,7 +75,33 @@ export default function MatchesPage() {
     return base.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 5);
   }, [players, chosen, quick]);
 
-  async function loadLists() {
+  const loadRecent = useCallback(async () => {
+    const lastMatches = await supabase
+      .from("matches")
+      .select(`id, played_at, day_seq, games(name), match_scores(is_winner, player_id, players(name))`)
+      .order("played_at", { ascending: false })
+      .limit(5);
+
+    const raw = (lastMatches.data as unknown as MatchRefRaw[]) ?? [];
+
+    // ---- normalização das joins
+    const normalized: MatchRef[] = raw.map((m) => ({
+      id: m.id,
+      played_at: m.played_at,
+      day_seq: m.day_seq,
+      games: asOne(m.games),
+      match_scores:
+        (m.match_scores ?? []).map((s) => ({
+          player_id: s.player_id,
+          is_winner: s.is_winner,
+          players: asOne(s.players),
+        })) ?? null,
+    }));
+
+    setRecent(normalized);
+  }, []);
+
+  const loadLists = useCallback(async () => {
     const [p, g] = await Promise.all([
       supabase.from("players").select("*").order("name"),
       supabase.from("games").select("*").order("name"),
@@ -65,41 +112,16 @@ export default function MatchesPage() {
     const lastGame = typeof window !== "undefined" ? localStorage.getItem(LS_LAST_GAME) : null;
     if (lastGame) setGameId(lastGame);
 
-    await loadRecent(0); // começa pela 1ª página
-  }
+    await loadRecent();
+  }, [loadRecent]);
 
-  async function loadRecent(targetPage = page) {
-    setRLoading(true);
+  useEffect(() => {
+    void loadLists();
+  }, [loadLists]);
 
-    const from = targetPage * PAGE_SIZE;
-    const to   = from + PAGE_SIZE - 1;
-
-    const { data, error, count } = await supabase
-      .from("matches")
-      .select(
-        `id, played_at, day_seq, games(name), match_scores(is_winner, players(name))`,
-        { count: "exact" } // retorna o total
-      )
-      .order("played_at", { ascending: false })
-      .range(from, to);
-
-    if (error) {
-      console.error(error);
-      toast.error("Erro ao carregar as partidas.");
-      setRecent([]);
-      setTotal(0);
-      setRLoading(false);
-      return;
-    }
-
-    setRecent((data as any[]) ?? []);
-    setTotal(count ?? 0);
-    setRLoading(false);
-  }
-
-  useEffect(() => { loadLists(); }, []);
-  useEffect(() => { if (gameId && typeof window !== "undefined") localStorage.setItem(LS_LAST_GAME, gameId); }, [gameId]);
-  useEffect(() => { loadRecent(page); }, [page]);
+  useEffect(() => {
+    if (gameId && typeof window !== "undefined") localStorage.setItem(LS_LAST_GAME, gameId);
+  }, [gameId]);
 
   // ---------- helpers
   function addLine(playerId: string) {
@@ -119,8 +141,12 @@ export default function MatchesPage() {
       return [...old, ...toAdd];
     });
   }
-  function clearAll() { setLines([]); }
-  function clearWinners() { setLines((old) => old.map((l) => ({ ...l, is_winner: false }))); }
+  function clearAll() {
+    setLines([]);
+  }
+  function clearWinners() {
+    setLines((old) => old.map((l) => ({ ...l, is_winner: false })));
+  }
   function setLine(idx: number, patch: Partial<Line>) {
     setLines((old) => old.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
   }
@@ -133,11 +159,14 @@ export default function MatchesPage() {
     e.preventDefault();
     if (quickSuggestions.length === 0) return;
     addLine(quickSuggestions[0].id);
-    setQuick(""); setQuickOpen(false);
+    setQuick("");
+    setQuickOpen(false);
   }
-  function handleQuickBlur() { setTimeout(() => setQuickOpen(false), 120); }
+  function handleQuickBlur() {
+    window.setTimeout(() => setQuickOpen(false), 120);
+  }
 
-  // Prefill de participantes da última partida do jogo escolhido
+  // Prefill
   async function prefillFromLastMatch() {
     if (!gameId) return toast.warning("Selecione um jogo primeiro.");
     const { data, error } = await supabase
@@ -147,15 +176,15 @@ export default function MatchesPage() {
       .order("played_at", { ascending: false })
       .limit(1);
     if (error) return toast.error("Não foi possível buscar a última partida.");
-    const last = (data as any[])?.[0];
+    const last = (data as { id: string; match_scores: { player_id: string }[] }[] | null)?.[0];
     if (!last || !last.match_scores?.length) return toast.info("Nenhuma partida anterior para este jogo.");
-    const ids: string[] = last.match_scores.map((s: any) => s.player_id);
+    const ids = last.match_scores.map((s) => s.player_id);
     const unique = Array.from(new Set(ids)).filter((id) => players.some((p) => p.id === id));
     setLines(unique.map((id) => ({ player_id: id, is_winner: false })));
     toast.success("Participantes carregados.");
   }
 
-  // ---------- salvar (o banco preenche o day_seq)
+  // salvar
   async function save() {
     if (!gameId) return toast.warning("Selecione um jogo.");
     if (lines.length === 0) return toast.warning("Adicione participantes da partida.");
@@ -177,41 +206,33 @@ export default function MatchesPage() {
     }
 
     const rows = lines.map((l) => ({
-      match_id: match.id,
+      match_id: match.id as string,
       player_id: l.player_id,
-      points: l.is_winner ? 1 : 0, // compatibilidade
+      points: l.is_winner ? 1 : 0,
       is_winner: l.is_winner,
     }));
     const { error: e2 } = await supabase.from("match_scores").insert(rows);
     setAdding(false);
     if (e2) return toast.error("Erro ao salvar os participantes.");
 
-    toast.success(`Partida salva! (#${match.day_seq ?? "?"} do dia)`);
-    // reset
+    toast.success(`Partida salva! (#${(match as { day_seq?: number | null }).day_seq ?? "?"} do dia)`);
     setPlayedAt(toLocalDatetimeInputValue());
     setNotes("");
     setLines([]);
-    setPage(0);          // volta para a primeira página
-    await loadRecent(0); // recarrega
+    void loadRecent();
   }
 
-  const canPrev = page > 0;
-  const lastPage = Math.max(Math.ceil(total / PAGE_SIZE) - 1, 0);
-  const canNext = page < lastPage;
-  const showingFrom = total === 0 ? 0 : page * PAGE_SIZE + 1;
-  const showingTo   = total === 0 ? 0 : Math.min((page + 1) * PAGE_SIZE, total);
-
   return (
-    <div className="grid gap-4 md:gap-6 lg:grid-cols-5 items-start">
-      {/* Coluna principal (não estica junto com a outra) */}
-      <Card className="p-3 md:p-4 lg:col-span-3 space-y-4 self-start">
+    <div className="grid gap-4 md:gap-6 lg:grid-cols-5">
+      {/* Coluna principal */}
+      <Card className="p-3 md:p-4 lg:col-span-3 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold text-lg">Registrar Partida</h2>
           <div className="flex gap-2 w-full sm:w-auto">
             <Button
               variant="outline"
               size="sm"
-              onClick={prefillFromLastMatch}
+              onClick={() => void prefillFromLastMatch()}
               disabled={!gameId}
               className="flex-1 sm:flex-none"
               title="Carregar participantes da última partida deste jogo"
@@ -265,6 +286,7 @@ export default function MatchesPage() {
                     onClick={() => { addLine(p.id); setQuick(""); setQuickOpen(false); quickRef.current?.focus(); }}
                     className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
                     role="option"
+                    aria-selected="false"
                   >
                     {p.name}
                   </button>
@@ -357,7 +379,7 @@ export default function MatchesPage() {
           <Input placeholder="Ex.: melhor de 3, mesa azul…" value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
 
-        {/* Barra fixa (segura o safe-area do iOS) */}
+        {/* Barra fixa */}
         <div
           className="
             sticky bottom-0 -mx-3 md:-mx-4 border-t bg-background/85 backdrop-blur
@@ -370,7 +392,7 @@ export default function MatchesPage() {
             Pronto para salvar? {winnersCount > 0 ? `${winnersCount} vencedor(es) marcados.` : "Marque ao menos um vencedor."}
           </div>
           <Button
-            onClick={save}
+            onClick={() => void save()}
             disabled={adding || !gameId || lines.length === 0 || winnersCount === 0}
             className="w-full sm:w-auto"
           >
@@ -379,23 +401,14 @@ export default function MatchesPage() {
         </div>
       </Card>
 
-      {/* Coluna lateral (últimas partidas) - não estica com a outra */}
-      <Card className="p-3 md:p-4 lg:col-span-2 space-y-3 self-start">
-        <h2 className="font-semibold">Últimas partidas</h2>
-
-        {/* Lista */}
+      {/* Coluna lateral (últimas partidas) */}
+      <Card className="p-3 md:p-4 lg:col-span-2">
+        <h2 className="font-semibold mb-3">Últimas partidas</h2>
         <ul className="space-y-3">
-          {rLoading && (
-            <li className="text-sm text-muted-foreground">Carregando…</li>
-          )}
-          {!rLoading && recent.length === 0 && (
-            <li className="text-sm text-muted-foreground">Sem partidas ainda.</li>
-          )}
-          {!rLoading && recent.map((m) => {
-            const winners = (m.match_scores ?? [])
-              .filter((s: any) => s.is_winner)
-              .map((s: any) => s.players?.name);
-            const participants = (m.match_scores ?? []).map((s: any) => s.players?.name);
+          {recent.map((m) => {
+            const scores = m.match_scores ?? [];
+            const winners = scores.filter((s) => s.is_winner).map((s) => s.players?.name ?? "—");
+            const participants = scores.map((s) => s.players?.name ?? "—");
 
             return (
               <li key={m.id} className="border rounded-md p-3">
@@ -419,32 +432,8 @@ export default function MatchesPage() {
               </li>
             );
           })}
+          {recent.length === 0 && <div className="text-sm text-muted-foreground">Sem partidas ainda.</div>}
         </ul>
-
-        {/* Paginação */}
-        <div className="flex items-center justify-between gap-2 pt-2 border-t">
-          <div className="text-xs text-muted-foreground">
-            {showingFrom}–{showingTo} de {total}
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((p) => Math.max(p - 1, 0))}
-              disabled={!canPrev}
-            >
-              Anterior
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((p) => Math.min(p + 1, lastPage))}
-              disabled={!canNext}
-            >
-              Próxima
-            </Button>
-          </div>
-        </div>
       </Card>
     </div>
   );
