@@ -7,13 +7,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import Podium from "@/components/podium";
 import { supabase } from "@/lib/supabase";
-import { rangeToDates, type RangeKey } from "@/lib/utils";
+import { rangeToDates, type RangeKey, fmtDate } from "@/lib/utils";
 
 type Row = {
   player_id: string;
   player_name: string;
-  total_points: number;
-  rank: number; // <-- posição considerando empates (dense rank)
+  wins: number;         // vitórias no período
+  games: number;        // partidas jogadas no período
+  losses: number;       // games - wins
+  winRate: number;      // 0..1
+  lastPlayed?: string;  // ISO
+  streak: string;       // "W2" | "L1" | "—"
+  total_points: number; // = wins (para Badge/Podium)
+  rank: number;         // dense rank por vitórias
 };
 
 export default function HomePage() {
@@ -23,12 +29,11 @@ export default function HomePage() {
 
   async function fetchLeaderboard(r: RangeKey) {
     setLoading(true);
-
     const { from, to } = rangeToDates(r);
 
     const { data, error } = await supabase
       .from("match_scores")
-      .select(`player_id, points, players(name), matches(played_at)`);
+      .select(`player_id, is_winner, players(name), matches(played_at)`);
 
     if (error || !data) {
       console.error(error);
@@ -37,34 +42,76 @@ export default function HomePage() {
       return;
     }
 
-    // filtra por período no cliente
     const filtered = (data as any[]).filter((d) => {
       const playedAt = new Date(d.matches?.played_at ?? 0);
       if (!from) return true;
       return playedAt >= from && (!to || playedAt <= to);
     });
 
-    // agrega por jogador
-    const map = new Map<string, { name: string; total: number }>();
-    filtered.forEach((r) => {
+    type Acc = {
+      name: string;
+      wins: number;
+      games: number;
+      last?: Date;
+      results: { date: Date; w: boolean }[];
+    };
+    const acc = new Map<string, Acc>();
+
+    filtered.forEach((r: any) => {
       const id = r.player_id as string;
       const name = r.players?.name ?? "Jogador";
-      const pts = Number(r.points) || 0;
-      map.set(id, { name, total: (map.get(id)?.total ?? 0) + pts });
+      const w = !!r.is_winner;
+      const date = new Date(r.matches?.played_at ?? 0);
+
+      if (!acc.has(id)) acc.set(id, { name, wins: 0, games: 0, results: [], last: undefined });
+      const a = acc.get(id)!;
+      a.games += 1;
+      if (w) a.wins += 1;
+      a.results.push({ date, w });
+      if (!a.last || date > a.last) a.last = date;
     });
 
-    const ordered = [...map.entries()]
-      .map(([player_id, v]) => ({ player_id, player_name: v.name, total_points: v.total }))
-      .sort((a, b) => b.total_points - a.total_points);
+    const ordered = [...acc.entries()]
+      .map(([player_id, a]) => {
+        a.results.sort((x, y) => x.date.getTime() - y.date.getTime());
+        let streak = "—";
+        if (a.results.length > 0) {
+          const lastWin = a.results[a.results.length - 1].w;
+          let n = 0;
+          for (let i = a.results.length - 1; i >= 0; i--) {
+            if (a.results[i].w === lastWin) n++;
+            else break;
+          }
+          streak = (lastWin ? "W" : "L") + n;
+        }
+        const games = a.games;
+        const wins = a.wins;
+        const losses = games - wins;
+        const winRate = games ? wins / games : 0;
 
-    // ---- DENSE RANK (1,1,2,3… sem “buracos”)
+        return {
+          player_id,
+          player_name: a.name,
+          wins,
+          games,
+          losses,
+          winRate,
+          lastPlayed: a.last?.toISOString(),
+          streak,
+          total_points: wins,
+        } as Row;
+      })
+      // ordena por vitórias; empates: maior aproveitamento e menos jogos
+      .sort((A, B) => (B.wins - A.wins) || (B.winRate - A.winRate) || (A.games - B.games));
+
+    // dense rank por vitórias
     const withRank: Row[] = [];
     let lastPts: number | null = null;
-    let currentRank = 0; // rank da “faixa” atual
+    let currentRank = 0;
     ordered.forEach((r) => {
-      if (lastPts === null || r.total_points !== lastPts) {
+      if (lastPts === null || r.wins !== lastPts) {
         currentRank += 1;
-        lastPts = r.total_points;
+        lastPts = r.wins;
       }
       withRank.push({ ...r, rank: currentRank });
     });
@@ -73,26 +120,23 @@ export default function HomePage() {
     setLoading(false);
   }
 
-  useEffect(() => {
-    fetchLeaderboard(range);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  useEffect(() => { fetchLeaderboard(range); }, [range]);
 
-  // Pódio: agrupa por rank e mostra os 3 primeiros ranks (com nomes juntinhos em caso de empate)
+  // Pódio (somente vitórias > 0; suporta empate)
   const top3 = useMemo(() => {
     const byRank = new Map<number, Row[]>();
     rows.forEach((r) => {
       if (!byRank.has(r.rank)) byRank.set(r.rank, []);
       byRank.get(r.rank)!.push(r);
     });
-    return [1, 2, 3].map((rk) => {
-      const group = byRank.get(rk) ?? [];
-      if (group.length === 0) return { name: "—", points: 0 };
-      return {
-        name: group.map((g) => g.player_name).join(", "),
-        points: group[0].total_points,
-      };
-    });
+
+    return [1, 2, 3]
+      .map((rk) => {
+        const g = byRank.get(rk) ?? [];
+        if (!g.length || g[0].wins <= 0) return null;
+        return { name: g.map((x) => x.player_name).join(", "), points: g[0].wins };
+      })
+      .filter(Boolean) as { name: string; points: number }[];
   }, [rows]);
 
   return (
@@ -106,7 +150,13 @@ export default function HomePage() {
         </TabsList>
 
         <TabsContent value={range} className="space-y-6">
-          <Podium top3={top3} />
+          {top3.length > 0 ? (
+            <Podium top3={top3} />
+          ) : (
+            <Card className="p-4 text-center text-sm text-muted-foreground">
+              Sem vitórias neste período.
+            </Card>
+          )}
 
           <Card className="p-0 overflow-hidden">
             <Table>
@@ -114,13 +164,18 @@ export default function HomePage() {
                 <TableRow>
                   <TableHead>#</TableHead>
                   <TableHead>Jogador</TableHead>
-                  <TableHead className="text-right">Pontos</TableHead>
+                  <TableHead className="text-right">Vitórias</TableHead>
+                  <TableHead className="text-right">Partidas</TableHead>
+                  <TableHead className="text-right">Aproveitamento</TableHead>
+                  <TableHead className="text-right">Sequência</TableHead>
+                  <TableHead className="text-right">Último jogo</TableHead>
                 </TableRow>
               </TableHeader>
+
               <TableBody>
                 {loading && (
                   <TableRow>
-                    <TableCell colSpan={3} className="text-center py-6 text-muted-foreground">
+                    <TableCell colSpan={7} className="text-center py-6 text-muted-foreground">
                       Carregando…
                     </TableCell>
                   </TableRow>
@@ -128,23 +183,30 @@ export default function HomePage() {
 
                 {!loading && rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={3} className="text-center py-6 text-muted-foreground">
+                    <TableCell colSpan={7} className="text-center py-6 text-muted-foreground">
                       Sem partidas neste período.
                     </TableCell>
                   </TableRow>
                 )}
 
-                {!loading &&
-                  rows.map((r) => (
-                    <TableRow key={r.player_id}>
-                      {/* mostra a posição calculada (empates na mesma posição) */}
-                      <TableCell className="w-10">{r.rank}</TableCell>
-                      <TableCell className="font-medium">{r.player_name}</TableCell>
-                      <TableCell className="text-right">
-                        <Badge variant="secondary">{r.total_points}</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                {!loading && rows.map((r) => (
+                  <TableRow key={r.player_id}>
+                    <TableCell className="w-10">{r.rank}</TableCell>
+                    <TableCell className="font-medium">
+                      {r.player_name}
+                      <div className="text-xs text-muted-foreground">
+                        {r.wins} vitória{r.wins === 1 ? "" : "s"} • {r.games} partida{r.games === 1 ? "" : "s"}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant="secondary">{r.wins}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right">{r.games}</TableCell>
+                    <TableCell className="text-right">{(r.winRate * 100).toFixed(0)}%</TableCell>
+                    <TableCell className="text-right">{r.streak}</TableCell>
+                    <TableCell className="text-right">{r.lastPlayed ? fmtDate(r.lastPlayed) : "—"}</TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           </Card>
