@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
 import { fmtDate } from "@/lib/utils";
 import { toast } from "sonner";
-import { Crown } from "lucide-react";
+import { Crown, ChevronLeft, ChevronRight } from "lucide-react";
 
 type Player = { id: string; name: string };
 type Game = { id: string; name: string };
@@ -58,7 +58,13 @@ export default function MatchesPage() {
   const [notes, setNotes] = useState<string>("");
 
   const [lines, setLines] = useState<Line[]>([]);
+
+  // ---- paginação (coluna “Últimas partidas”)
   const [recent, setRecent] = useState<MatchRef[]>([]);
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(5);
+  const [total, setTotal] = useState<number>(0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const [adding, setAdding] = useState(false);
   const [quick, setQuick] = useState("");
@@ -75,16 +81,35 @@ export default function MatchesPage() {
     return base.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 5);
   }, [players, chosen, quick]);
 
-  const loadRecent = useCallback(async () => {
-    const lastMatches = await supabase
+  // ---------- carregar listas base
+  const loadLists = useCallback(async () => {
+    const [p, g] = await Promise.all([
+      supabase.from("players").select("*").order("name"),
+      supabase.from("games").select("*").order("name"),
+    ]);
+    setPlayers((p.data as Player[]) ?? []);
+    setGames((g.data as Game[]) ?? []);
+
+    const lastGame = typeof window !== "undefined" ? localStorage.getItem(LS_LAST_GAME) : null;
+    if (lastGame) setGameId(lastGame);
+  }, []);
+
+  // ---------- carregar página de “últimas partidas”
+  const loadPage = useCallback(async () => {
+    // total (contagem simples de matches)
+    const { count } = await supabase.from("matches").select("id", { count: "exact", head: true });
+    setTotal(count ?? 0);
+
+    const from = (page - 1) * pageSize;
+    const to = from + pageSize - 1;
+
+    const { data } = await supabase
       .from("matches")
       .select(`id, played_at, day_seq, games(name), match_scores(is_winner, player_id, players(name))`)
       .order("played_at", { ascending: false })
-      .limit(5);
+      .range(from, to);
 
-    const raw = (lastMatches.data as unknown as MatchRefRaw[]) ?? [];
-
-    // ---- normalização das joins
+    const raw = (data as unknown as MatchRefRaw[]) ?? [];
     const normalized: MatchRef[] = raw.map((m) => ({
       id: m.id,
       played_at: m.played_at,
@@ -99,25 +124,15 @@ export default function MatchesPage() {
     }));
 
     setRecent(normalized);
-  }, []);
-
-  const loadLists = useCallback(async () => {
-    const [p, g] = await Promise.all([
-      supabase.from("players").select("*").order("name"),
-      supabase.from("games").select("*").order("name"),
-    ]);
-    setPlayers((p.data as Player[]) ?? []);
-    setGames((g.data as Game[]) ?? []);
-
-    const lastGame = typeof window !== "undefined" ? localStorage.getItem(LS_LAST_GAME) : null;
-    if (lastGame) setGameId(lastGame);
-
-    await loadRecent();
-  }, [loadRecent]);
+  }, [page, pageSize]);
 
   useEffect(() => {
     void loadLists();
   }, [loadLists]);
+
+  useEffect(() => {
+    void loadPage();
+  }, [loadPage]);
 
   useEffect(() => {
     if (gameId && typeof window !== "undefined") localStorage.setItem(LS_LAST_GAME, gameId);
@@ -166,7 +181,7 @@ export default function MatchesPage() {
     window.setTimeout(() => setQuickOpen(false), 120);
   }
 
-  // Prefill
+  // Prefill (última partida do jogo selecionado)
   async function prefillFromLastMatch() {
     if (!gameId) return toast.warning("Selecione um jogo primeiro.");
     const { data, error } = await supabase
@@ -208,7 +223,7 @@ export default function MatchesPage() {
     const rows = lines.map((l) => ({
       match_id: match.id as string,
       player_id: l.player_id,
-      points: l.is_winner ? 1 : 0,
+      points: l.is_winner ? 1 : 0, // compatibilidade
       is_winner: l.is_winner,
     }));
     const { error: e2 } = await supabase.from("match_scores").insert(rows);
@@ -219,7 +234,10 @@ export default function MatchesPage() {
     setPlayedAt(toLocalDatetimeInputValue());
     setNotes("");
     setLines([]);
-    void loadRecent();
+
+    // volta para a primeira página para ver a partida recém-criada
+    setPage(1);
+    void loadPage();
   }
 
   return (
@@ -402,8 +420,57 @@ export default function MatchesPage() {
       </Card>
 
       {/* Coluna lateral (últimas partidas) */}
-      <Card className="p-3 md:p-4 lg:col-span-2">
-        <h2 className="font-semibold mb-3">Últimas partidas</h2>
+      <Card className="p-3 md:p-4 lg:col-span-2 space-y-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h2 className="font-semibold">Últimas partidas</h2>
+
+          {/* controles de paginação */}
+          <div className="flex items-center gap-2">
+            <Select
+              value={String(pageSize)}
+              onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}
+            >
+              <SelectTrigger className="h-8 w-[90px]">
+                <SelectValue placeholder="Itens" />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="5">5 / pág</SelectItem>
+                <SelectItem value="10">10 / pág</SelectItem>
+                <SelectItem value="20">20 / pág</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <div className="text-xs text-muted-foreground tabular-nums">
+              {total === 0
+                ? "0 de 0"
+                : `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} de ${total}`}
+            </div>
+
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                aria-label="Página anterior"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                aria-label="Próxima página"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+
         <ul className="space-y-3">
           {recent.map((m) => {
             const scores = m.match_scores ?? [];
@@ -432,7 +499,9 @@ export default function MatchesPage() {
               </li>
             );
           })}
-          {recent.length === 0 && <div className="text-sm text-muted-foreground">Sem partidas ainda.</div>}
+          {recent.length === 0 && (
+            <div className="text-sm text-muted-foreground">Sem partidas ainda.</div>
+          )}
         </ul>
       </Card>
     </div>
