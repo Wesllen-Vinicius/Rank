@@ -17,6 +17,7 @@ type Game   = { id: string; name: string };
 type Line   = { player_id: string; is_winner: boolean };
 
 const LS_LAST_GAME = "lastGameId";
+const PAGE_SIZE = 10;
 
 function toLocalDatetimeInputValue(d = new Date()) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -31,7 +32,12 @@ export default function MatchesPage() {
   const [notes, setNotes]       = useState<string>("");
 
   const [lines, setLines]   = useState<Line[]>([]);
-  const [recent, setRecent] = useState<any[]>([]);
+
+  // recentes com paginação
+  const [recent, setRecent]   = useState<any[]>([]);
+  const [rLoading, setRLoading] = useState(true);
+  const [total, setTotal]     = useState(0);
+  const [page, setPage]       = useState(0);
 
   const [adding, setAdding] = useState(false);
   const [quick, setQuick]   = useState("");
@@ -59,23 +65,41 @@ export default function MatchesPage() {
     const lastGame = typeof window !== "undefined" ? localStorage.getItem(LS_LAST_GAME) : null;
     if (lastGame) setGameId(lastGame);
 
-    await loadRecent();
+    await loadRecent(0); // começa pela 1ª página
   }
 
-  async function loadRecent() {
-    const lastMatches = await supabase
+  async function loadRecent(targetPage = page) {
+    setRLoading(true);
+
+    const from = targetPage * PAGE_SIZE;
+    const to   = from + PAGE_SIZE - 1;
+
+    const { data, error, count } = await supabase
       .from("matches")
-      .select(`id, played_at, day_seq, games(name), match_scores(is_winner, players(name))`)
+      .select(
+        `id, played_at, day_seq, games(name), match_scores(is_winner, players(name))`,
+        { count: "exact" } // retorna o total
+      )
       .order("played_at", { ascending: false })
-      .limit(5);
-    setRecent((lastMatches.data as any[]) ?? []);
+      .range(from, to);
+
+    if (error) {
+      console.error(error);
+      toast.error("Erro ao carregar as partidas.");
+      setRecent([]);
+      setTotal(0);
+      setRLoading(false);
+      return;
+    }
+
+    setRecent((data as any[]) ?? []);
+    setTotal(count ?? 0);
+    setRLoading(false);
   }
 
   useEffect(() => { loadLists(); }, []);
-
-  useEffect(() => {
-    if (gameId && typeof window !== "undefined") localStorage.setItem(LS_LAST_GAME, gameId);
-  }, [gameId]);
+  useEffect(() => { if (gameId && typeof window !== "undefined") localStorage.setItem(LS_LAST_GAME, gameId); }, [gameId]);
+  useEffect(() => { loadRecent(page); }, [page]);
 
   // ---------- helpers
   function addLine(playerId: string) {
@@ -167,13 +191,20 @@ export default function MatchesPage() {
     setPlayedAt(toLocalDatetimeInputValue());
     setNotes("");
     setLines([]);
-    loadRecent();
+    setPage(0);          // volta para a primeira página
+    await loadRecent(0); // recarrega
   }
 
+  const canPrev = page > 0;
+  const lastPage = Math.max(Math.ceil(total / PAGE_SIZE) - 1, 0);
+  const canNext = page < lastPage;
+  const showingFrom = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const showingTo   = total === 0 ? 0 : Math.min((page + 1) * PAGE_SIZE, total);
+
   return (
-    <div className="grid gap-4 md:gap-6 lg:grid-cols-5">
-      {/* Coluna principal */}
-      <Card className="p-3 md:p-4 lg:col-span-3 space-y-4">
+    <div className="grid gap-4 md:gap-6 lg:grid-cols-5 items-start">
+      {/* Coluna principal (não estica junto com a outra) */}
+      <Card className="p-3 md:p-4 lg:col-span-3 space-y-4 self-start">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold text-lg">Registrar Partida</h2>
           <div className="flex gap-2 w-full sm:w-auto">
@@ -348,11 +379,19 @@ export default function MatchesPage() {
         </div>
       </Card>
 
-      {/* Coluna lateral (últimas partidas) */}
-      <Card className="p-3 md:p-4 lg:col-span-2">
-        <h2 className="font-semibold mb-3">Últimas partidas</h2>
+      {/* Coluna lateral (últimas partidas) - não estica com a outra */}
+      <Card className="p-3 md:p-4 lg:col-span-2 space-y-3 self-start">
+        <h2 className="font-semibold">Últimas partidas</h2>
+
+        {/* Lista */}
         <ul className="space-y-3">
-          {recent.map((m) => {
+          {rLoading && (
+            <li className="text-sm text-muted-foreground">Carregando…</li>
+          )}
+          {!rLoading && recent.length === 0 && (
+            <li className="text-sm text-muted-foreground">Sem partidas ainda.</li>
+          )}
+          {!rLoading && recent.map((m) => {
             const winners = (m.match_scores ?? [])
               .filter((s: any) => s.is_winner)
               .map((s: any) => s.players?.name);
@@ -380,8 +419,32 @@ export default function MatchesPage() {
               </li>
             );
           })}
-          {recent.length === 0 && <div className="text-sm text-muted-foreground">Sem partidas ainda.</div>}
         </ul>
+
+        {/* Paginação */}
+        <div className="flex items-center justify-between gap-2 pt-2 border-t">
+          <div className="text-xs text-muted-foreground">
+            {showingFrom}–{showingTo} de {total}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(p - 1, 0))}
+              disabled={!canPrev}
+            >
+              Anterior
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.min(p + 1, lastPage))}
+              disabled={!canNext}
+            >
+              Próxima
+            </Button>
+          </div>
+        </div>
       </Card>
     </div>
   );

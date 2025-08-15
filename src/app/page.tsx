@@ -5,6 +5,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import Podium from "@/components/podium";
 import { supabase } from "@/lib/supabase";
 import { rangeToDates, type RangeKey, fmtDate } from "@/lib/utils";
@@ -12,41 +14,76 @@ import { rangeToDates, type RangeKey, fmtDate } from "@/lib/utils";
 type Row = {
   player_id: string;
   player_name: string;
-  wins: number;         // vitórias no período
-  games: number;        // partidas jogadas no período
-  losses: number;       // games - wins
-  winRate: number;      // 0..1
-  lastPlayed?: string;  // ISO
-  streak: string;       // "W2" | "L1" | "—"
-  total_points: number; // = wins (para Badge/Podium)
-  rank: number;         // dense rank por vitórias
+  wins: number;
+  games: number;
+  losses: number;
+  winRate: number;     // 0..1
+  lastPlayed?: string; // ISO
+  streak: string;      // "W2" | "L1" | "—"
+  total_points: number;
+  rank: number;
 };
 
+type Game = { id: string; name: string };
+
+type RangeKeyPlus = RangeKey | "custom";
+const ALL_GAMES = "__all__";
+
 export default function HomePage() {
-  const [range, setRange] = useState<RangeKey>("total");
+  const [range, setRange] = useState<RangeKeyPlus>("total");
+  const [customFrom, setCustomFrom] = useState<string>(""); // YYYY-MM-DD
+  const [customTo,   setCustomTo]   = useState<string>(""); // YYYY-MM-DD
+  const [gameId, setGameId]         = useState<string>(""); // filtro por jogo ("" = todos)
+  const [search, setSearch]         = useState<string>(""); // busca por jogador
+
+  const [games, setGames] = useState<Game[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
 
-  async function fetchLeaderboard(r: RangeKey) {
-    setLoading(true);
-    const { from, to } = rangeToDates(r);
+  const [matchesCount, setMatchesCount] = useState(0);
+  const [playersCount, setPlayersCount] = useState(0);
+  const [winsCount, setWinsCount] = useState(0);
 
-    const { data, error } = await supabase
+  function computeRangeDates(r: RangeKeyPlus) {
+    if (r !== "custom") return rangeToDates(r);
+    const from = customFrom ? new Date(`${customFrom}T00:00:00`) : undefined;
+    const to   = customTo   ? new Date(`${customTo}T23:59:59.999`) : undefined;
+    return { from, to };
+  }
+
+  async function fetchLeaderboard(r: RangeKeyPlus) {
+    setLoading(true);
+
+    let query = supabase
       .from("match_scores")
-      .select(`player_id, is_winner, players(name), matches(played_at)`);
+      .select(`match_id, player_id, is_winner, players(name), matches(played_at, game_id)`);
+
+    if (gameId) query = query.eq("matches.game_id", gameId);
+
+    const { data, error } = await query;
 
     if (error || !data) {
       console.error(error);
       setRows([]);
+      setMatchesCount(0);
+      setPlayersCount(0);
+      setWinsCount(0);
       setLoading(false);
       return;
     }
 
+    const { from, to } = computeRangeDates(r);
+
     const filtered = (data as any[]).filter((d) => {
       const playedAt = new Date(d.matches?.played_at ?? 0);
-      if (!from) return true;
-      return playedAt >= from && (!to || playedAt <= to);
+      const okDate   = !from ? true : (playedAt >= from && (!to || playedAt <= to));
+      const okGame   = !gameId ? true : (d.matches?.game_id === gameId);
+      return okDate && okGame;
     });
+
+    setMatchesCount(new Set(filtered.map((x) => x.match_id)).size);
+    setPlayersCount(new Set(filtered.map((x) => x.player_id)).size);
+    setWinsCount(filtered.reduce((s, x) => s + (x.is_winner ? 1 : 0), 0));
 
     type Acc = {
       name: string;
@@ -101,10 +138,8 @@ export default function HomePage() {
           total_points: wins,
         } as Row;
       })
-      // ordena por vitórias; empates: maior aproveitamento e menos jogos
       .sort((A, B) => (B.wins - A.wins) || (B.winRate - A.winRate) || (A.games - B.games));
 
-    // dense rank por vitórias
     const withRank: Row[] = [];
     let lastPts: number | null = null;
     let currentRank = 0;
@@ -120,9 +155,24 @@ export default function HomePage() {
     setLoading(false);
   }
 
-  useEffect(() => { fetchLeaderboard(range); }, [range]);
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from("games").select("*").order("name");
+      setGames((data as Game[]) ?? []);
+    })();
+  }, []);
 
-  // Pódio (somente vitórias > 0; suporta empate)
+  useEffect(() => {
+    fetchLeaderboard(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, customFrom, customTo, gameId]);
+
+  const rowsFilteredBySearch = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => r.player_name.toLowerCase().includes(q));
+  }, [rows, search]);
+
   const top3 = useMemo(() => {
     const byRank = new Map<number, Row[]>();
     rows.forEach((r) => {
@@ -139,17 +189,93 @@ export default function HomePage() {
       .filter(Boolean) as { name: string; points: number }[];
   }, [rows]);
 
+  const summary = useMemo(() => {
+    const totalPlayers = rows.length;
+    return [
+      { label: "Partidas", value: matchesCount },
+      { label: "Jogadores", value: playersCount },
+      { label: "Vitórias", value: winsCount },
+      { label: "No ranking", value: totalPlayers },
+    ];
+  }, [matchesCount, playersCount, winsCount, rows]);
+
   return (
     <div className="space-y-6">
-      <Tabs value={range} onValueChange={(v) => setRange(v as RangeKey)} className="w-full">
-        <TabsList className="grid grid-cols-4 w-full md:w-auto">
+      <Tabs value={range} onValueChange={(v) => setRange(v as RangeKeyPlus)} className="w-full">
+        <TabsList className="grid grid-cols-5 w-full md:w-auto">
           <TabsTrigger value="day">Hoje</TabsTrigger>
           <TabsTrigger value="week">Semana</TabsTrigger>
           <TabsTrigger value="month">Mês</TabsTrigger>
           <TabsTrigger value="total">Total</TabsTrigger>
+          <TabsTrigger value="custom">Personalizado</TabsTrigger>
         </TabsList>
 
         <TabsContent value={range} className="space-y-6">
+          {/* Filtros */}
+          <Card className="p-3 md:p-4">
+            <div className="grid gap-3 md:grid-cols-4">
+              {/* Jogo */}
+              <div>
+                <div className="text-xs mb-1 text-muted-foreground">Jogo</div>
+                <Select
+                  value={gameId}
+                  onValueChange={(v) => setGameId(v === ALL_GAMES ? "" : v)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Todos os jogos" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {/* NUNCA usar value="" aqui */}
+                    <SelectItem value={ALL_GAMES}>Todos</SelectItem>
+                    {games.map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Datas (só ativa no personalizado) */}
+              <div className={`${range === "custom" ? "" : "opacity-60 pointer-events-none"}`}>
+                <div className="text-xs mb-1 text-muted-foreground">De</div>
+                <Input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                />
+              </div>
+              <div className={`${range === "custom" ? "" : "opacity-60 pointer-events-none"}`}>
+                <div className="text-xs mb-1 text-muted-foreground">Até</div>
+                <Input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                />
+              </div>
+
+              {/* Busca */}
+              <div>
+                <div className="text-xs mb-1 text-muted-foreground">Buscar jogador</div>
+                <Input
+                  placeholder="Nome do jogador…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* resumo */}
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              {summary.map((s) => (
+                <span key={s.label} className="inline-flex items-center gap-1">
+                  <span className="font-medium">{s.value}</span> {s.label}
+                </span>
+              ))}
+            </div>
+          </Card>
+
+          {/* Pódio */}
           {top3.length > 0 ? (
             <Podium top3={top3} />
           ) : (
@@ -158,6 +284,7 @@ export default function HomePage() {
             </Card>
           )}
 
+          {/* Tabela */}
           <Card className="p-0 overflow-hidden">
             <Table>
               <TableHeader>
@@ -181,7 +308,7 @@ export default function HomePage() {
                   </TableRow>
                 )}
 
-                {!loading && rows.length === 0 && (
+                {!loading && rowsFilteredBySearch.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-6 text-muted-foreground">
                       Sem partidas neste período.
@@ -189,7 +316,7 @@ export default function HomePage() {
                   </TableRow>
                 )}
 
-                {!loading && rows.map((r) => (
+                {!loading && rowsFilteredBySearch.map((r) => (
                   <TableRow key={r.player_id}>
                     <TableCell className="w-10">{r.rank}</TableCell>
                     <TableCell className="font-medium">

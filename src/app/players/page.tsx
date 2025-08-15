@@ -10,35 +10,86 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 type Player = { id: string; name: string };
 
-export default function PlayersPage() {
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [name, setName] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
-  const [search, setSearch] = useState("");
-  const [removingId, setRemovingId] = useState<string | null>(null);
+const PAGE_SIZE = 12;
 
-  async function load() {
-    setLoading(true);
-    const { data, error } = await supabase.from("players").select("*").order("name");
-    if (error) toast.error("Erro ao carregar jogadores.");
+export default function PlayersPage() {
+  // form
+  const [name, setName] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  // list + paginação
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [search, setSearch] = useState("");
+  const [listLoading, setListLoading] = useState(true);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+
+  const lastPage = Math.max(Math.ceil(total / PAGE_SIZE) - 1, 0);
+  const canPrev = page > 0;
+  const canNext = page < lastPage;
+  const showingFrom = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const showingTo = total === 0 ? 0 : Math.min((page + 1) * PAGE_SIZE, total);
+
+  async function loadPlayers(targetPage = page, currentSearch = search) {
+    setListLoading(true);
+
+    const from = targetPage * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
+    let query = supabase.from("players").select("*", { count: "exact" });
+
+    const q = currentSearch.trim();
+    if (q) query = query.ilike("name", `%${q}%`);
+
+    const { data, error, count } = await query.order("name").range(from, to);
+
+    if (error) {
+      toast.error("Erro ao carregar jogadores.");
+      setPlayers([]);
+      setTotal(0);
+      setListLoading(false);
+      return;
+    }
+
     setPlayers((data as Player[]) ?? []);
-    setLoading(false);
+    setTotal(count ?? 0);
+    setListLoading(false);
   }
+
+  useEffect(() => {
+    // primeira carga
+    loadPlayers(0, search);
+  }, []);
+
+  useEffect(() => {
+    // ao mudar page OU termo de busca, recarrega
+    loadPlayers(page, search);
+  }, [page]);
+
+  // para busca: sempre que o usuário digitar, volta para a página 1
+  useEffect(() => {
+    setPage(0);
+    loadPlayers(0, search);
+  }, [search]);
 
   async function addPlayer() {
     const value = name.trim();
     if (!value) return toast.warning("Informe um nome.");
+
     setAdding(true);
     const { error } = await supabase.from("players").insert({ name: value });
     setAdding(false);
+
     if (error) {
       toast.error("Não foi possível adicionar. Nome já existe?");
       return;
     }
     toast.success("Jogador adicionado!");
     setName("");
-    load();
+    // volta pra primeira página para ver a lista atualizada em ordem alfabética
+    setPage(0);
+    loadPlayers(0, search);
   }
 
   async function removePlayer(id: string) {
@@ -56,9 +107,7 @@ export default function PlayersPage() {
     }
     if ((count ?? 0) > 0) {
       toast.error(
-        `Não é possível remover: existem ${count} registro${
-          count === 1 ? "" : "s"
-        } em partidas para este jogador.`
+        `Não é possível remover: existem ${count} registro${count === 1 ? "" : "s"} em partidas para este jogador.`
       );
       return;
     }
@@ -67,14 +116,9 @@ export default function PlayersPage() {
     const ok = window.confirm("Remover este jogador? Esta ação não pode ser desfeita.");
     if (!ok) return;
 
-    // 3) executa delete e EXIGE linhas afetadas (se não vier nada, tratamos como erro)
+    // 3) executa delete e EXIGE linhas afetadas
     setRemovingId(id);
-    const { data, error } = await supabase
-      .from("players")
-      .delete()
-      .eq("id", id)
-      .select("*"); // <-- retorna as linhas removidas
-
+    const { data, error } = await supabase.from("players").delete().eq("id", id).select("*");
     setRemovingId(null);
 
     if (error) {
@@ -87,23 +131,27 @@ export default function PlayersPage() {
     }
 
     toast.success("Jogador removido.");
-    setPlayers((prev) => prev.filter((p) => p.id !== id));
+
+    // recalcula página atual se o total diminuir
+    const newTotal = Math.max(total - 1, 0);
+    const newLastPage = Math.max(Math.ceil(newTotal / PAGE_SIZE) - 1, 0);
+    const target = Math.min(page, newLastPage);
+    setPage(target);
+    loadPlayers(target, search);
   }
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return players;
-    return players.filter((p) => p.name.toLowerCase().includes(q));
-  }, [players, search]);
+  const emptyStateText = useMemo(() => {
+    if (listLoading) return "";
+    if (players.length > 0) return "";
+    return search.trim()
+      ? "Nenhum jogador encontrado para esse termo."
+      : "Nenhum jogador cadastrado.";
+  }, [listLoading, players, search]);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      {/* Novo Jogador */}
-      <Card className="p-4 space-y-3">
+    <div className="grid gap-6 lg:grid-cols-2 items-start">
+      {/* Novo Jogador (não “estica” junto com a lista) */}
+      <Card className="p-4 space-y-3 self-start">
         <h2 className="font-semibold">Novo Jogador</h2>
 
         <form
@@ -128,8 +176,8 @@ export default function PlayersPage() {
         <p className="text-xs text-muted-foreground">Nomes são únicos (ex.: "Wesllen").</p>
       </Card>
 
-      {/* Lista de Jogadores */}
-      <Card className="p-4 space-y-3">
+      {/* Lista de Jogadores (com paginação, e sem esticar com o card ao lado) */}
+      <Card className="p-4 space-y-3 self-start">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <h2 className="font-semibold">Jogadores</h2>
           <div className="w-full sm:w-64">
@@ -143,7 +191,7 @@ export default function PlayersPage() {
         </div>
 
         {/* Loading */}
-        {loading && (
+        {listLoading && (
           <div className="space-y-2">
             <Skeleton className="h-10 rounded" />
             <Skeleton className="h-10 rounded" />
@@ -152,38 +200,63 @@ export default function PlayersPage() {
         )}
 
         {/* Empty / No match */}
-        {!loading && filtered.length === 0 && (
+        {!listLoading && players.length === 0 && (
           <div className="text-sm text-muted-foreground border rounded-md p-3">
-            {players.length === 0
-              ? "Nenhum jogador cadastrado."
-              : "Nenhum jogador encontrado para esse termo."}
+            {emptyStateText}
           </div>
         )}
 
         {/* List */}
-        {!loading && filtered.length > 0 && (
-          <ul className="space-y-2">
-            {filtered.map((p) => (
-              <li
-                key={p.id}
-                className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between border rounded-md px-3 py-2"
-              >
-                <span className="truncate">{p.name}</span>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removePlayer(p.id)}
-                    disabled={removingId === p.id}
-                    className="w-full sm:w-auto"
-                  >
-                    {removingId === p.id ? "Removendo…" : "Remover"}
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
+        {!listLoading && players.length > 0 && (
+          <>
+            <ul className="space-y-2">
+              {players.map((p) => (
+                <li
+                  key={p.id}
+                  className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between border rounded-md px-3 py-2"
+                >
+                  <span className="truncate">{p.name}</span>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removePlayer(p.id)}
+                      disabled={removingId === p.id}
+                      className="w-full sm:w-auto"
+                    >
+                      {removingId === p.id ? "Removendo…" : "Remover"}
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            {/* Paginação */}
+            <div className="flex items-center justify-between gap-2 pt-2 border-t">
+              <div className="text-xs text-muted-foreground">
+                {showingFrom}–{showingTo} de {total}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(p - 1, 0))}
+                  disabled={!canPrev}
+                >
+                  Anterior
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.min(p + 1, lastPage))}
+                  disabled={!canNext}
+                >
+                  Próxima
+                </Button>
+              </div>
+            </div>
+          </>
         )}
       </Card>
     </div>
