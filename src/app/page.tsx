@@ -1,103 +1,155 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useMemo, useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import Podium from "@/components/podium";
+import { supabase } from "@/lib/supabase";
+import { rangeToDates, type RangeKey } from "@/lib/utils";
+
+type Row = {
+  player_id: string;
+  player_name: string;
+  total_points: number;
+  rank: number; // <-- posição considerando empates (dense rank)
+};
+
+export default function HomePage() {
+  const [range, setRange] = useState<RangeKey>("total");
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  async function fetchLeaderboard(r: RangeKey) {
+    setLoading(true);
+
+    const { from, to } = rangeToDates(r);
+
+    const { data, error } = await supabase
+      .from("match_scores")
+      .select(`player_id, points, players(name), matches(played_at)`);
+
+    if (error || !data) {
+      console.error(error);
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+
+    // filtra por período no cliente
+    const filtered = (data as any[]).filter((d) => {
+      const playedAt = new Date(d.matches?.played_at ?? 0);
+      if (!from) return true;
+      return playedAt >= from && (!to || playedAt <= to);
+    });
+
+    // agrega por jogador
+    const map = new Map<string, { name: string; total: number }>();
+    filtered.forEach((r) => {
+      const id = r.player_id as string;
+      const name = r.players?.name ?? "Jogador";
+      const pts = Number(r.points) || 0;
+      map.set(id, { name, total: (map.get(id)?.total ?? 0) + pts });
+    });
+
+    const ordered = [...map.entries()]
+      .map(([player_id, v]) => ({ player_id, player_name: v.name, total_points: v.total }))
+      .sort((a, b) => b.total_points - a.total_points);
+
+    // ---- DENSE RANK (1,1,2,3… sem “buracos”)
+    const withRank: Row[] = [];
+    let lastPts: number | null = null;
+    let currentRank = 0; // rank da “faixa” atual
+    ordered.forEach((r) => {
+      if (lastPts === null || r.total_points !== lastPts) {
+        currentRank += 1;
+        lastPts = r.total_points;
+      }
+      withRank.push({ ...r, rank: currentRank });
+    });
+
+    setRows(withRank);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    fetchLeaderboard(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range]);
+
+  // Pódio: agrupa por rank e mostra os 3 primeiros ranks (com nomes juntinhos em caso de empate)
+  const top3 = useMemo(() => {
+    const byRank = new Map<number, Row[]>();
+    rows.forEach((r) => {
+      if (!byRank.has(r.rank)) byRank.set(r.rank, []);
+      byRank.get(r.rank)!.push(r);
+    });
+    return [1, 2, 3].map((rk) => {
+      const group = byRank.get(rk) ?? [];
+      if (group.length === 0) return { name: "—", points: 0 };
+      return {
+        name: group.map((g) => g.player_name).join(", "),
+        points: group[0].total_points,
+      };
+    });
+  }, [rows]);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="space-y-6">
+      <Tabs value={range} onValueChange={(v) => setRange(v as RangeKey)} className="w-full">
+        <TabsList className="grid grid-cols-4 w-full md:w-auto">
+          <TabsTrigger value="day">Hoje</TabsTrigger>
+          <TabsTrigger value="week">Semana</TabsTrigger>
+          <TabsTrigger value="month">Mês</TabsTrigger>
+          <TabsTrigger value="total">Total</TabsTrigger>
+        </TabsList>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <TabsContent value={range} className="space-y-6">
+          <Podium top3={top3} />
+
+          <Card className="p-0 overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>#</TableHead>
+                  <TableHead>Jogador</TableHead>
+                  <TableHead className="text-right">Pontos</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center py-6 text-muted-foreground">
+                      Carregando…
+                    </TableCell>
+                  </TableRow>
+                )}
+
+                {!loading && rows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center py-6 text-muted-foreground">
+                      Sem partidas neste período.
+                    </TableCell>
+                  </TableRow>
+                )}
+
+                {!loading &&
+                  rows.map((r) => (
+                    <TableRow key={r.player_id}>
+                      {/* mostra a posição calculada (empates na mesma posição) */}
+                      <TableCell className="w-10">{r.rank}</TableCell>
+                      <TableCell className="font-medium">{r.player_name}</TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant="secondary">{r.total_points}</Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
