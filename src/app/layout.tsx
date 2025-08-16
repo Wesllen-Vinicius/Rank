@@ -1,3 +1,4 @@
+// src/app/layout.tsx
 import "./globals.css";
 import type { Metadata } from "next";
 import Navbar from "@/components/navbar";
@@ -14,25 +15,29 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const version = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
   const year = new Date().getFullYear();
 
-  // altura da bottom bar (com safe-area) — usada no <main> e pela MobileTabs
-  const bodyVars = {
-    ["--btm-h"]: "calc(3.5rem + env(safe-area-inset-bottom))",
-  } as React.CSSProperties & { ["--btm-h"]: string };
-
   return (
     <html lang="pt-BR" suppressHydrationWarning>
-      <body className="min-h-screen bg-background text-foreground" style={bodyVars}>
+      {/* Body como flex container p/ “sticky footer” */}
+      <body className="min-h-screen bg-background text-foreground flex flex-col">
         <ThemeProvider>
           <Navbar />
 
-          {/* reserva espaço p/ a bottom bar no mobile */}
-          <main className="container mx-auto max-w-5xl px-3 md:px-4 pt-6 pb-[calc(var(--btm-h)+0.5rem)] md:pb-8">
+          {/* Ocupa o restante da tela */}
+          <main
+            className="
+              flex-1
+              container mx-auto max-w-5xl
+              px-3 md:px-4 pt-6
+              pb-24 md:pb-8
+              supports-[padding:env(safe-area-inset-bottom)]:pb-[calc(env(safe-area-inset-bottom)+4.5rem)]
+            "
+          >
             {children}
           </main>
 
-          {/* footer só no desktop/tablet */}
-          <footer className="border-t hidden md:block">
-            <div className="container mx-auto max-w-5xl px-3 md:px-4 py-6 text-xs text-muted-foreground flex items-center justify-between gap-3">
+          {/* Footer fixo (apenas web/desktop) */}
+          <footer className="hidden md:block border-t">
+            <div className="container mx-auto max-w-5xl px-3 md:px-4 h-12 flex items-center justify-between text-xs text-muted-foreground">
               <span>© {year} • Feito com Next.js, shadcn/ui e Supabase.</span>
               <span className="inline-flex items-center gap-1">
                 <span className="hidden sm:inline">versão</span>
@@ -42,6 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </footer>
 
           <Toaster richColors closeButton position="top-center" />
+          {/* Barra inferior fixa (mobile) */}
           <MobileTabs />
         </ThemeProvider>
       </body>

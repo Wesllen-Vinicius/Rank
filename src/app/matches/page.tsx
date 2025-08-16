@@ -241,9 +241,9 @@ export default function MatchesPage() {
   }
 
   return (
-    <div className="grid gap-4 md:gap-6 lg:grid-cols-5">
+    <div className="grid items-start gap-4 md:gap-6 lg:grid-cols-5">
       {/* Coluna principal */}
-      <Card className="p-3 md:p-4 lg:col-span-3 space-y-4">
+      <Card className="p-3 md:p-4 lg:col-span-3 self-start space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold text-lg">Registrar Partida</h2>
           <div className="flex gap-2 w-full sm:w-auto">
@@ -420,7 +420,7 @@ export default function MatchesPage() {
       </Card>
 
       {/* Coluna lateral (últimas partidas) */}
-      <Card className="p-3 md:p-4 lg:col-span-2 space-y-3">
+      <Card className="p-3 md:p-4 lg:col-span-2 self-start space-y-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <h2 className="font-semibold">Últimas partidas</h2>
 
