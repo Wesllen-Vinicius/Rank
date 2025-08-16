@@ -19,7 +19,7 @@ export default function MobileTabs() {
         fixed bottom-0 left-0 right-0 z-40
         border-t bg-background/95 backdrop-blur
         md:hidden
-        supports-[padding:env(safe-area-inset-bottom)]:pb-[env(safe-area-inset-bottom)]
+        h-[var(--btm-h)] pb-[env(safe-area-inset-bottom)]
       "
       aria-label="Navegação inferior"
     >
@@ -32,8 +32,7 @@ export default function MobileTabs() {
                 href={href}
                 className="
                   flex h-14 flex-col items-center justify-center gap-1
-                  text-xs
-                  data-[active=true]:font-medium
+                  text-xs data-[active=true]:font-medium
                 "
                 data-active={active}
                 aria-current={active ? "page" : undefined}

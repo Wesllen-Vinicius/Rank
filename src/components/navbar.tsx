@@ -11,7 +11,6 @@ import { Kbd } from "@/components/ui/kbd";
 import GlobalSearch from "./global-search";
 
 function openGlobalSearch() {
-  // dispara um evento global para o componente GlobalSearch abrir
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("open-global-search"));
   }
@@ -21,6 +20,8 @@ export default function Navbar() {
   const pathname = usePathname();
   const isActive = (href: string) =>
     pathname === href || (href !== "/" && pathname.startsWith(href));
+
+  const version = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
@@ -48,7 +49,7 @@ export default function Navbar() {
 
           <div className="mx-1 w-px self-stretch bg-border" />
 
-          {/* Botão de busca (Ctrl/⌘+K) */}
+          {/* Busca (Ctrl/⌘+K) */}
           <Button
             variant="outline"
             size="sm"
@@ -58,8 +59,9 @@ export default function Navbar() {
             title="Abrir busca (Ctrl/⌘+K)"
           >
             <Search className="h-4 w-4" />
-            Buscar <span className="ml-1 hidden lg:inline-flex items-center gap-1">
-              <Kbd>Ctrl</Kbd> + <Kbd>K</Kbd>
+            Buscar{" "}
+            <span className="ml-1 hidden lg:inline-flex items-center gap-1">
+              <Kbd>Ctrl</Kbd>+<Kbd>K</Kbd>
             </span>
           </Button>
 
@@ -73,8 +75,12 @@ export default function Navbar() {
           <ModeToggle />
         </nav>
 
-        {/* Mobile */}
+        {/* Mobile: versão + busca + nova partida + tema */}
         <div className="ml-auto flex md:hidden items-center gap-2">
+          <code className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+            {version}
+          </code>
+
           <Button
             variant="outline"
             size="icon"
@@ -96,7 +102,7 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* Monta o diálogo de busca em nível de layout */}
+      {/* Diálogo de busca global */}
       <GlobalSearch />
     </header>
   );
